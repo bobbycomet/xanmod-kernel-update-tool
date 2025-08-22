@@ -1,4 +1,5 @@
 XanMod Kernel Manager
+
 The XanMod Kernel Manager is a simple graphical tool to help you manage your XanMod kernel installations. This application makes it easy to install, update, and remove different XanMod kernel versions without needing to use complex terminal commands.
 
 Note: This is an unofficial tool created by a community member. It is not affiliated with the official XanMod project. It is designed to work on Linux Mint and other Debian-based systems that use GTK for their graphical applications.
