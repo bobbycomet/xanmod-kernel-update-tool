@@ -1,0 +1,15 @@
+Package: xanmod-kernel-manager
+Priority: optional
+Section: utils
+Maintainer: Bobby Comet griffin.OS.help@gmail.com
+Architecture: all
+Version: 1.0
+Depends: python3, python3-gi, gir1.2-gtk-3.0, gir1.2-appindicator3-0.1, python3-apt, dkms
+Filename: pool/main/x/xanmod-kernel-manager/xanmod-kernel-manager-deb.deb
+Size: 47582
+MD5sum: c1619ef732dc0dbce49050ffe50cde28
+SHA1: a73fccad3052a43cddf5b93e08eeadb32ba6c132
+SHA256: 3227ca5e1f9c36105288bf2e43da7e0c52f392e33460faf1a730598ad87df5f5
+SHA512: 55c5e7d2537d1eadfca1e673a261256fb4c384159a73482f1d07e86d380d920aa518a4aa96a54f8d69a38146d56ae92fbbd8bbf8a998cc92930b301539687acc
+Description: A graphical manager for XanMod kernels with tray icon, updates, and DKMS rebuilds.
+
