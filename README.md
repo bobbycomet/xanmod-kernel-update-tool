@@ -1,4 +1,4 @@
-#### **XanMod Kernel Manager** ####
+# **XanMod Kernel Manager**
 
 The XanMod Kernel Manager is a simple graphical tool to help you manage your XanMod kernel installations. This application makes it easy to install, update, and remove different XanMod kernel versions without needing to use complex terminal commands.
 
