@@ -5,12 +5,15 @@ The XanMod Kernel Manager is a simple graphical tool to help you manage your Xan
 Note: This is an unofficial tool created by a community member. It is not affiliated with the official XanMod project. It is designed to work on Linux Mint and other Debian-based systems that use GTK for their graphical applications.
 
 Installation
+
 There are two easy ways to install the XanMod Kernel Manager.
 
 Method 1: Direct .deb File
+
 If you just want to install the application, you can download the latest .deb file, named xanmodkernalmanager.deb, from the releases page and double-click it. Your system's package installer will handle the rest.
 
 Method 2: APT Repository (Recommended)
+
 To receive automatic updates, it's best to add our official APT repository. This lets you install the application using a single command and keep it up to date whenever you run sudo apt update.
 
 Add the GPG Key: This key verifies that the packages you download are from a trusted source.
