@@ -18,22 +18,20 @@ To receive automatic updates, it's best to add our official APT repository. This
 
 Add the GPG Key: This key verifies that the packages you download are from a trusted source.
 
-wget -qO - https://raw.githubusercontent.com/bobbycomet/xanmod-kernel-update-tool/refs/heads/main/xanmodkernalmanager-repo/dists/stable/your-public-key.asc | sudo gpg --dearmor -o /etc/apt/keyrings/xanmod-manager-repo.gpg
+ **For the GPG Key command:**
+    * `wget -qO - https://raw.githubusercontent.com/bobbycomet/xanmod-kernel-update-tool/refs/heads/main/xanmodkernalmanager-repo/dists/stable/your-public-key.asc | sudo gpg --dearmor -o /etc/apt/keyrings/xanmod-manager-repo.gpg`
+    
 
+  **For the Add Repository command:**
+    * `echo "deb [signed-by=/etc/apt/keyrings/xanmod-manager-repo.gpg] https://bobbycomet.github.io/xanmod-kernel-update-tool stable main" | sudo tee /etc/apt/sources.list.d/xanmod-manager.list > /dev/null`
+ 
 
-Add the Repository: This command adds the XanMod Kernel Manager repository to your system's sources list.
+  **For the Update and Install commands:**
 
-echo "deb [bobbycomet=/etc/apt/keyrings/xanmod-manager-repo.gpg] https://bobbycomet.github.io/xanmod-kernel-update-tool stable main" | sudo tee /etc/apt/sources.list.d/xanmod-manager.list > /dev/null
-
-
-**Update and Install: Now, update your package list and install the application.**
-
-sudo apt update
-
-sudo apt install xanmod-kernel-manager
-
-
-**How to Use**
+        ```bash
+        sudo apt update
+        sudo apt install xanmod-kernel-manager
+        ```
 
 Once installed, you'll find the XanMod Kernel Manager in your application menu. Simply click to open it and use the graphical interface to manage your kernels. The application will handle the technical details for you!
 
