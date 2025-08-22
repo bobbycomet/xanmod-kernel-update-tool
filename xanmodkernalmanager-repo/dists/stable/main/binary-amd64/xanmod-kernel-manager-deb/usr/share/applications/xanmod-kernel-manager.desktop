@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=XanMod Kernel Manager
+Comment=Manage and update XanMod kernels
+Exec=xanmod-kernel-manager
+Icon=xanmod-kernel-manager
+Terminal=false
+Type=Application
+Categories=System;Settings;
+StartupNotify=true

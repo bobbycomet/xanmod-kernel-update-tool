@@ -1,0 +1,904 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+XanMod Kernel Manager — Mint-style, standalone
+
+- Only shows XanMod kernels (no generic/mainline/liquorix)
+- No PPA; can add the official APT repo (keyring + sources.list) if missing
+- Background actions (no terminal pops): apt update/install/remove, dkms builds
+- Search/filter bar
+- Two panes: Available (APT) and Installed (system) with Active tagging
+- Auto-remove: keeps Active + 2 newest version groups (image+headers)
+- Version-aware sorting via apt_pkg.version_compare
+- Logs streamed to UI and also saved to ~/.config/xanmod-kernel-manager/logs/
+"""
+
+import os
+import sys
+import json
+import threading
+import subprocess
+import platform
+from pathlib import Path
+from functools import cmp_to_key
+from datetime import datetime
+
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("AppIndicator3", "0.1")
+from gi.repository import Gtk, AppIndicator3, GLib, Notify
+
+# python-apt
+try:
+    import apt
+except Exception:
+    print("python-apt is required: sudo apt install python3-apt", file=sys.stderr)
+    raise
+
+# apt_pkg for version comparison
+try:
+    import apt_pkg
+    apt_pkg.init()
+except Exception:
+    apt_pkg = None
+
+APP_ID = "xanmod.kernel.manager"
+ICON_OK = "system-software-update-available-symbolic"
+ICON_UPDATE = "software-update-urgent-symbolic"
+ICON_CHECKING = "view-refresh-symbolic"
+
+# Official XanMod repo settings (no PPA)
+XANMOD_KEY_URL = "https://dl.xanmod.org/gpg.key"
+XANMOD_KEYRING = "/usr/share/keyrings/xanmod-archive-keyring.gpg"
+# deb.xanmod.org is the official APT server
+XANMOD_SOURCE_LINE = f"deb [signed-by={XANMOD_KEYRING}] http://deb.xanmod.org releases main"
+XANMOD_SOURCE_FILE = "/etc/apt/sources.list.d/xanmod-kernel.list"
+
+# Offer to add repo automatically if missing
+AUTO_OFFER_ADD_REPO = True
+
+# Config
+CONFIG_DIR = Path.home()/".config"/"xanmod-kernel-manager"
+CONFIG_FILE = CONFIG_DIR/"config.json"
+LOG_DIR = CONFIG_DIR/"logs"
+DEFAULT_CONFIG = {
+    "auto_check_hours": 6,
+    "auto_remove_after_install": False,
+    "win_size": [980, 620],
+    "win_position": None
+}
+
+# Store columns (shared)
+COL_SELECTED  = 0  # bool
+COL_MARKUP    = 1  # markup text (name + version + tags)
+COL_PKGNAME   = 2  # package name (e.g. linux-xanmod-x64v4, linux-headers-..., linux-image-...)
+COL_VERSION   = 3  # candidate or installed version
+COL_SIZE      = 4  # human-readable size
+COL_STATUS    = 5  # "Active" / "Installed" / "Available"
+COL_INSTALLED = 6  # bool
+COL_ACTIVE    = 7  # bool
+
+# Filters
+def is_xanmod_name(name: str) -> bool:
+    # Only accept real XanMod kernel package families
+    # images/meta/header common shapes:
+    #   linux-xanmod, linux-xanmod-lts, linux-xanmod-edge, linux-image-xanmod*, linux-headers-xanmod*
+    lname = name.lower()
+    return (
+        lname.startswith("linux-xanmod")
+        or lname.startswith("linux-image-xanmod")
+        or lname.startswith("linux-headers-xanmod")
+        or lname.startswith("linux-modules-xanmod")
+    )
+
+class KernelManager:
+    def __init__(self):
+        # apt cache
+        self.cache = None
+        self.kernels = []  # collected (XanMod only)
+
+        # system info
+        self.running_release = platform.uname().release
+        self._pre_modules = set()
+        self._last_installed_pkgs = []
+
+        # UI state
+        self.busy = False
+
+        # Logging
+        self._log_handle = None
+
+        # Notifications
+        try:
+            Notify.init("XanMod Kernel Manager")
+            self.notify_ready = True
+        except Exception:
+            self.notify_ready = False
+
+        # Tray (optional visual)
+        self.indicator = AppIndicator3.Indicator.new(
+            APP_ID, ICON_OK, AppIndicator3.IndicatorCategory.SYSTEM_SERVICES
+        )
+        self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
+        self._build_tray_menu()
+
+        # Main window
+        self.win = None
+        self._build_window()
+
+        # First load + maybe offer repo setup
+        self._reload_kernels_async()
+        if AUTO_OFFER_ADD_REPO:
+            GLib.idle_add(self._maybe_offer_add_xanmod_repo)
+
+        hours = self._load_config().get("auto_check_hours", DEFAULT_CONFIG["auto_check_hours"])
+        GLib.timeout_add_seconds(int(max(1, hours)) * 3600, self._periodic_check)
+
+    # --------------------------- Config --------------------------- #
+    def _load_config(self):
+        try:
+            if CONFIG_FILE.exists():
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    return {**DEFAULT_CONFIG, **data}
+        except Exception:
+            pass
+        return DEFAULT_CONFIG.copy()
+
+    def _save_config(self, data):
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+
+    # --------------------------- Tray ----------------------------- #
+    def _build_tray_menu(self):
+        menu = Gtk.Menu()
+
+        mi_check = Gtk.MenuItem(label="Check for Updates")
+        mi_check.connect("activate", self._action_check_updates)
+        menu.append(mi_check)
+
+        mi_open = Gtk.MenuItem(label="Open Manager")
+        mi_open.connect("activate", lambda *_: self.win.present())
+        menu.append(mi_open)
+
+        mi_quit = Gtk.MenuItem(label="Quit")
+        mi_quit.connect("activate", lambda *_: Gtk.main_quit())
+        menu.append(mi_quit)
+
+        menu.show_all()
+        self.indicator.set_menu(menu)
+
+    # --------------------------- APT cache ------------------------ #
+    def _open_cache(self):
+        if self.cache is None:
+            self.cache = apt.Cache()
+        else:
+            self.cache.open(None)
+
+    def _version_cmp(self, a: str, b: str) -> int:
+        if apt_pkg is not None:
+            try:
+                return apt_pkg.version_compare(a or "0", b or "0")
+            except Exception:
+                pass
+        return (a > b) - (a < b)
+
+    def _fmt_bytes(self, n):
+        if not n or n <= 0:
+            return "—"
+        units = ["B","KB","MB","GB","TB"]
+        f = float(n)
+        for u in units:
+            if f < 1024 or u == units[-1]:
+                return (f"{f:.0f} {u}" if u == "B" else f"{f:.1f} {u}")
+            f /= 1024
+
+    # --------------------------- Repo setup ----------------------- #
+    def _xanmod_repo_present(self) -> bool:
+        # Heuristic: sources file exists with correct line, and keyring present
+        try:
+            if os.path.isfile(XANMOD_SOURCE_FILE):
+                with open(XANMOD_SOURCE_FILE, "r", encoding="utf-8", errors="ignore") as f:
+                    txt = f.read()
+                    if "deb.xanmod.org" in txt or "xanmod" in txt:
+                        return os.path.isfile(XANMOD_KEYRING)
+        except Exception:
+            pass
+        # Also check if apt has any candidate for a XanMod package
+        try:
+            self._open_cache()
+            for name in ("linux-xanmod", "linux-image-xanmod"):
+                if name in self.cache and self.cache[name].candidate:
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _maybe_offer_add_xanmod_repo(self):
+        if self._xanmod_repo_present():
+            return False
+        dialog = Gtk.MessageDialog(
+            self.win, 0, Gtk.MessageType.QUESTION, Gtk.ButtonsType.NONE,
+            "XanMod APT repository not detected."
+        )
+        dialog.add_button("Not Now", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Add Repo", Gtk.ResponseType.OK)
+        dialog.format_secondary_text(
+            "Would you like to add the official XanMod repository now?\n"
+            "This will download the GPG key, create a sources list entry, and refresh APT."
+        )
+        resp = dialog.run()
+        dialog.destroy()
+        if resp == Gtk.ResponseType.OK:
+            self._add_xanmod_repo_silent()
+        return True
+
+    def _add_xanmod_repo_silent(self):
+        self._action_show_details()
+        self._clear_log()
+        self._start_log_session("add-repo")
+        self._set_busy(True, "Adding XanMod repo and refreshing APT…")
+        bash = f"""
+set -e
+install -m 0755 -d /usr/share/keyrings
+curl -fsSL "{XANMOD_KEY_URL}" | gpg --dearmor | tee "{XANMOD_KEYRING}" >/dev/null
+echo '{XANMOD_SOURCE_LINE}' | tee "{XANMOD_SOURCE_FILE}" >/dev/null
+apt update
+"""
+        cmd = ["pkexec","bash","-lc", bash]
+        self._stream_subprocess(cmd, self._on_add_repo_done)
+
+    def _on_add_repo_done(self, rc: int, combined_output: str):
+        self._set_busy(False, "Repository setup complete." if rc == 0 else "Repository setup failed.")
+        if rc != 0:
+            if self._is_auth_cancel(rc, combined_output):
+                self._error_dialog("Cancelled", "Authorization was denied or cancelled.")
+            else:
+                self._error_dialog("Repo Setup Failed", combined_output or "Unknown error")
+        self._reload_kernels_async()
+        self._end_log_session()
+
+    # --------------------------- Collect kernels ------------------ #
+    def _list_module_dirs(self):
+        try:
+            return set(sorted(os.listdir("/usr/lib/modules")))
+        except Exception:
+            return set()
+
+    def _collect_kernels(self):
+        self._open_cache()
+        items = []
+        run = self.running_release
+        module_dirs = self._list_module_dirs()
+
+        for pkg in self.cache:  # type: ignore[attr-defined]
+            name = pkg.name
+            if not is_xanmod_name(name):
+                continue
+            cand = pkg.candidate
+            if not cand:
+                continue
+            version = cand.version or ""
+            installed = pkg.is_installed
+
+            # active heuristic: check uname release vs version/name and presence of modules dir
+            active = False
+            if installed:
+                if run in module_dirs:
+                    if version and version in run:
+                        active = True
+                    elif name and name in run:
+                        active = True
+                else:
+                    if version and (run.startswith(version) or version in run):
+                        active = True
+
+            status = "Active" if active else ("Installed" if installed else "Available")
+            size_b = getattr(cand, "installed_size", 0) or 0
+            size = self._fmt_bytes(int(size_b))
+
+            # Markup with clear tags
+            if active:
+                markup = f"<b>{name}</b> <small>({version})</small> " \
+                         f"<span foreground='green'><b>[Active]</b></span>"
+            elif installed:
+                markup = f"<span foreground='gray'>{name} <small>({version})</small> [Installed]</span>"
+            else:
+                markup = f"<b>{name}</b> <small>({version})</small> " \
+                         f"<span foreground='green'>[Available]</span>"
+
+            items.append({
+                "name": name,
+                "version": version,
+                "installed": installed,
+                "active": active,
+                "status": status,
+                "size": size,
+                "markup": markup,
+            })
+
+        # Sorting: Active -> Installed -> Available, then by base name, then version (ascending)
+        def _cmp(a, b):
+            ga = 0 if a["active"] else (1 if a["installed"] else 2)
+            gb = 0 if b["active"] else (1 if b["installed"] else 2)
+            if ga != gb:
+                return ga - gb
+            if a["name"] != b["name"]:
+                return -1 if a["name"] < b["name"] else 1
+            return self._version_cmp(a["version"], b["version"])
+
+        items.sort(key=cmp_to_key(_cmp))
+        return items
+
+    def _reload_kernels_async(self):
+        def worker():
+            try:
+                items = self._collect_kernels()
+                GLib.idle_add(self._on_kernels_loaded, items)
+            except Exception as e:
+                GLib.idle_add(self._error_dialog, "Kernel list failed", str(e))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_kernels_loaded(self, items):
+        self.kernels = items
+        self._update_indicator()
+        self._populate_models()
+
+    def _update_indicator(self):
+        if any(not k["installed"] for k in self.kernels):
+            self.indicator.set_icon(ICON_UPDATE)
+        else:
+            self.indicator.set_icon(ICON_OK)
+
+    # --------------------------- Window/UI ------------------------ #
+    def _build_window(self):
+        self.win = Gtk.Window(title="XanMod Kernel Manager")
+        self.win.set_default_size(*self._load_config().get("win_size", [980, 620]))
+        self.win.connect("destroy", lambda *_: self._on_window_close())
+        self.win.connect("configure-event", self._on_configure)
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        outer.set_border_width(8)
+        self.win.add(outer)
+
+        # Toolbar
+        toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        outer.pack_start(toolbar, False, False, 0)
+
+        self.btn_refresh = Gtk.Button(label="Refresh")
+        self.btn_refresh.connect("clicked", self._action_check_updates)
+        toolbar.pack_start(self.btn_refresh, False, False, 0)
+
+        self.btn_install = Gtk.Button(label="Install Selected")
+        self.btn_install.connect("clicked", self._install_selected)
+        toolbar.pack_start(self.btn_install, False, False, 0)
+
+        self.btn_remove = Gtk.Button(label="Remove Selected")
+        self.btn_remove.connect("clicked", self._remove_selected)
+        toolbar.pack_start(self.btn_remove, False, False, 0)
+
+        self.btn_autorm = Gtk.Button(label="Auto-Remove Old Kernels")
+        self.btn_autorm.connect("clicked", self._auto_remove_old_kernels)
+        toolbar.pack_start(self.btn_autorm, False, False, 0)
+
+        self.chk_auto_rm = Gtk.CheckButton(label="Auto-remove after install")
+        self.chk_auto_rm.set_active(bool(self._load_config().get("auto_remove_after_install", False)))
+        toolbar.pack_start(self.chk_auto_rm, False, False, 0)
+
+        self.spinner = Gtk.Spinner()
+        toolbar.pack_end(self.spinner, False, False, 0)
+
+        # Search bar
+        search_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        outer.pack_start(search_box, False, False, 0)
+        lbl = Gtk.Label(label="Filter:")
+        lbl.set_xalign(0)
+        search_box.pack_start(lbl, False, False, 0)
+        self.search_entry = Gtk.SearchEntry()
+        self.search_entry.connect("search-changed", self._on_search_changed)
+        search_box.pack_start(self.search_entry, True, True, 0)
+
+        # Split pane: Available (left) / Installed (right)
+        paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        outer.pack_start(paned, True, True, 0)
+
+        # Store (one backing store, two filters)
+        self.store = Gtk.ListStore(bool, str, str, str, str, str, bool, bool)
+
+        # Filters
+        self.filter_available = self.store.filter_new()
+        self.filter_available.set_visible_func(lambda m, it, d=None: self._filter_visible(m, it, only="available"))
+
+        self.filter_installed = self.store.filter_new()
+        self.filter_installed.set_visible_func(lambda m, it, d=None: self._filter_visible(m, it, only="installed"))
+
+        # Available view
+        left_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        paned.add1(left_box)
+        left_label = Gtk.Label()
+        left_label.set_markup("<b>Available XanMod Kernels</b>")
+        left_box.pack_start(left_label, False, False, 0)
+
+        self.tree_avail = Gtk.TreeView(model=self.filter_available)
+        self._init_tree_columns(self.tree_avail)
+        sc1 = Gtk.ScrolledWindow()
+        sc1.add(self.tree_avail)
+        left_box.pack_start(sc1, True, True, 0)
+
+        # Installed view
+        right_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        paned.add2(right_box)
+        right_label = Gtk.Label()
+        right_label.set_markup("<b>Installed (XanMod)</b>")
+        right_box.pack_start(right_label, False, False, 0)
+
+        self.tree_inst = Gtk.TreeView(model=self.filter_installed)
+        self._init_tree_columns(self.tree_inst)
+        sc2 = Gtk.ScrolledWindow()
+        sc2.add(self.tree_inst)
+        right_box.pack_start(sc2, True, True, 0)
+
+        # Details revealer
+        controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        outer.pack_start(controls, False, False, 0)
+
+        self.btn_details = Gtk.ToggleButton(label="Show Details")
+        self.btn_details.connect("toggled", lambda b: self.revealer.set_reveal_child(b.get_active()))
+        controls.pack_start(self.btn_details, False, False, 0)
+
+        self.status_label = Gtk.Label(xalign=0)
+        controls.pack_start(self.status_label, True, True, 0)
+
+        self.revealer = Gtk.Revealer()
+        self.revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        self.revealer.set_reveal_child(False)
+        outer.pack_start(self.revealer, False, False, 0)
+
+        # Log panel
+        log_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.textview = Gtk.TextView()
+        self.textview.set_editable(False)
+        self.textview.set_monospace(True)
+        self.textbuf = self.textview.get_buffer()
+        log_scroll = Gtk.ScrolledWindow()
+        log_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        log_scroll.set_min_content_height(180)
+        log_scroll.add(self.textview)
+        log_box.pack_start(log_scroll, True, True, 0)
+        self.revealer.add(log_box)
+
+        # Restore position/size
+        cfg = self._load_config()
+        if cfg.get("win_position"):
+            try:
+                x, y = cfg["win_position"]
+                self.win.move(int(x), int(y))
+            except Exception:
+                pass
+
+        self.win.show_all()
+        self._update_buttons()
+
+    def _init_tree_columns(self, tree):
+        # Toggle column
+        toggle = Gtk.CellRendererToggle()
+        toggle.connect("toggled", self._on_toggle_from_view, tree)
+        col0 = Gtk.TreeViewColumn("", toggle, active=COL_SELECTED)
+        tree.append_column(col0)
+
+        # Kernel column
+        txt = Gtk.CellRendererText()
+        col1 = Gtk.TreeViewColumn("Kernel", txt, markup=COL_MARKUP)
+        col1.set_min_width(420)
+        tree.append_column(col1)
+
+        # Size
+        txt2 = Gtk.CellRendererText()
+        col2 = Gtk.TreeViewColumn("Size", txt2, text=COL_SIZE)
+        col2.set_min_width(100)
+        tree.append_column(col2)
+
+        # Status
+        txt3 = Gtk.CellRendererText()
+        col3 = Gtk.TreeViewColumn("Status", txt3, text=COL_STATUS)
+        col3.set_min_width(120)
+        tree.append_column(col3)
+
+        tree.connect("row-activated", self._on_row_activated)
+
+    def _on_configure(self, *args):
+        try:
+            cfg = self._load_config()
+            w, h = self.win.get_size()
+            cfg["win_size"] = [w, h]
+            x, y = self.win.get_position()
+            cfg["win_position"] = [x, y]
+            self._save_config(cfg)
+        except Exception:
+            pass
+
+    def _populate_models(self):
+        # refresh store
+        self.store.clear()
+        for k in self.kernels:
+            self.store.append([
+                False,
+                k["markup"],
+                k["name"],
+                k["version"],
+                k["size"],
+                k["status"],
+                k["installed"],
+                k["active"],
+            ])
+        self._refilter_all()
+        self._update_buttons()
+
+    def _refilter_all(self):
+        self.filter_available.refilter()
+        self.filter_installed.refilter()
+
+    def _filter_visible(self, model, it, only=None):
+        q = (self.search_entry.get_text() or "").strip().lower()
+        name = (model.get_value(it, COL_PKGNAME) or "").lower()
+        ver = (model.get_value(it, COL_VERSION) or "").lower()
+        status = (model.get_value(it, COL_STATUS) or "").lower()
+        markup = (model.get_value(it, COL_MARKUP) or "").lower()
+
+        if q and not any(q in x for x in (name, ver, status, markup)):
+            return False
+
+        installed = bool(model.get_value(it, COL_INSTALLED))
+        if only == "available":
+            return not installed
+        if only == "installed":
+            return installed
+        return True
+
+    def _on_search_changed(self, entry):
+        self._refilter_all()
+
+    def _on_toggle_from_view(self, cell, path_str, tree):
+        # path_str is filter path; map to child path in the backing store
+        filt = tree.get_model()
+        child_path = filt.convert_path_to_child_path(Gtk.TreePath.new_from_string(path_str))
+        it = self.store.get_iter(child_path)
+        if not it:
+            return
+        current = self.store.get_value(it, COL_SELECTED)
+        self.store.set_value(it, COL_SELECTED, not current)
+        self._update_buttons()
+
+    def _on_row_activated(self, tree, path, column):
+        # Double-click toggles selection
+        filt = tree.get_model()
+        child_path = filt.convert_path_to_child_path(path)
+        it = self.store.get_iter(child_path)
+        if not it:
+            return
+        current = self.store.get_value(it, COL_SELECTED)
+        self.store.set_value(it, COL_SELECTED, not current)
+        self._update_buttons()
+
+    def _update_buttons(self):
+        can_install = False
+        can_remove = False
+        it = self.store.get_iter_first()
+        while it:
+            if self.store.get_value(it, COL_SELECTED):
+                installed = self.store.get_value(it, COL_INSTALLED)
+                active = self.store.get_value(it, COL_ACTIVE)
+                if not installed:
+                    can_install = True
+                if installed and not active:
+                    can_remove = True
+            it = self.store.iter_next(it)
+        self.btn_install.set_sensitive(can_install and not self.busy)
+        self.btn_remove.set_sensitive(can_remove and not self.busy)
+        self.btn_refresh.set_sensitive(not self.busy)
+        self.btn_autorm.set_sensitive(not self.busy)
+
+    def _action_show_details(self):
+        if not self.btn_details.get_active():
+            self.btn_details.set_active(True)
+
+    # --------------------------- Async ops / logs ----------------- #
+    def _append_log(self, text):
+        end = self.textbuf.get_end_iter()
+        self.textbuf.insert(end, text)
+        mark = self.textbuf.create_mark(None, self.textbuf.get_end_iter(), True)
+        self.textview.scroll_mark_onscreen(mark)
+        if self._log_handle:
+            try:
+                self._log_handle.write(text)
+                self._log_handle.flush()
+            except Exception:
+                pass
+        return False
+
+    def _start_log_session(self, prefix: str):
+        try:
+            LOG_DIR.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            fp = LOG_DIR / f"{prefix}_{ts}.log"
+            self._log_handle = open(fp, "w", encoding="utf-8")
+            self._append_log(f"\n=== Log started: {fp} ===\n")
+        except Exception:
+            self._log_handle = None
+
+    def _end_log_session(self):
+        try:
+            if self._log_handle:
+                self._append_log("\n=== Log ended ===\n")
+                self._log_handle.close()
+        except Exception:
+            pass
+        self._log_handle = None
+
+    def _clear_log(self):
+        self.textbuf.set_text("")
+        self._end_log_session()
+
+    def _set_busy(self, busy: bool, status_text: str = ""):
+        self.busy = busy
+        if busy:
+            self.spinner.start()
+        else:
+            self.spinner.stop()
+        self.status_label.set_text(status_text)
+        self._update_buttons()
+
+    def _run_subprocess(self, cmd):
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            out, err = proc.communicate()
+            return proc.returncode, out, err
+        except Exception as e:
+            return 1, "", str(e)
+
+    def _stream_subprocess(self, cmd, on_done):
+        def worker():
+            combined = []
+            try:
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    combined.append(line)
+                    GLib.idle_add(self._append_log, line)
+                rc = proc.wait()
+            except Exception as e:
+                err_line = f"\nERROR: {e}\n"
+                combined.append(err_line)
+                GLib.idle_add(self._append_log, err_line)
+                rc = 1
+            GLib.idle_add(on_done, rc, "".join(combined))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _is_auth_cancel(self, rc: int, output: str) -> bool:
+        out = (output or "").lower()
+        return rc in (126, 127) or "authentication failed" in out or "not authorized" in out or "polkit" in out
+
+    # --------------------------- Actions -------------------------- #
+    def _action_check_updates(self, *_):
+        self._set_indicator_busy(True)
+        def worker():
+            rc, out, err = self._run_subprocess(["pkexec","apt","update"])
+            GLib.idle_add(self._set_indicator_busy, False)
+            GLib.idle_add(self._reload_kernels_async)
+            if rc != 0 and not self._is_auth_cancel(rc, out + err):
+                GLib.idle_add(self._error_dialog, "Failed to refresh apt cache", (err or out))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _set_indicator_busy(self, busy: bool):
+        self.indicator.set_icon(ICON_CHECKING if busy else (ICON_UPDATE if any(not k["installed"] for k in self.kernels) else ICON_OK))
+
+    # --------------------------- Install/Remove ------------------- #
+    def _install_selected(self, *_):
+        pkgs = []
+        it = self.store.get_iter_first()
+        while it:
+            if self.store.get_value(it, COL_SELECTED) and not self.store.get_value(it, COL_INSTALLED):
+                pkgs.append(self.store.get_value(it, COL_PKGNAME))
+            it = self.store.iter_next(it)
+        if not pkgs:
+            self._error_dialog("Nothing to install", "Select one or more available XanMod kernels.")
+            return
+
+        self._pre_modules = self._list_module_dirs()
+        self._last_installed_pkgs = list(pkgs)
+
+        self._action_show_details()
+        self._clear_log()
+        self._start_log_session("install")
+        self._set_busy(True, "Installing selected kernels…")
+        cmd = ["pkexec","apt","install","-y"] + pkgs
+        self._stream_subprocess(cmd, self._on_install_done)
+
+    def _on_install_done(self, rc: int, combined_output: str):
+        ok = (rc == 0)
+        self._set_busy(False, "Installation complete." if ok else "Installation failed.")
+        if not ok:
+            if self._is_auth_cancel(rc, combined_output):
+                self._error_dialog("Cancelled", "Authorization was denied or cancelled.")
+            else:
+                self._error_dialog("Install failed", combined_output or "Unknown error")
+            self._end_log_session()
+            self._reload_kernels_async()
+            return
+
+        if self.chk_auto_rm.get_active():
+            self._auto_remove_old_kernels()
+
+        self._dkms_for_new_kernels_then_reboot()
+        self._reload_kernels_async()
+
+    def _dkms_for_new_kernels_then_reboot(self):
+        before = self._pre_modules
+        after = self._list_module_dirs()
+        new_releases = sorted([r for r in (after - before) if r != self.running_release])
+
+        if new_releases:
+            self._append_log("\nDetected newly installed kernel releases:\n  " + "\n  ".join(new_releases) + "\n")
+            self._set_busy(True, "Rebuilding DKMS modules for new kernels…")
+            quoted = " ".join([f"'{r}'" for r in new_releases])
+            bash_cmd = f"set -e; for k in {quoted}; do echo '=== DKMS autoinstall for $k ==='; dkms autoinstall -k \"$k\"; done; echo 'All DKMS builds finished.'"
+            cmd = ["pkexec","bash","-lc", bash_cmd]
+
+            def _done(rc, out):
+                self._set_busy(False, "DKMS build complete." if rc == 0 else "DKMS build failed.")
+                if rc != 0:
+                    self._append_log("\nOne or more DKMS builds failed. You may reboot and rebuild later if needed.\n")
+                self._show_reboot_dialog()
+                self._end_log_session()
+
+            self._stream_subprocess(cmd, _done)
+        else:
+            self._append_log("\nNo new /usr/lib/modules entries detected; running generic 'dkms autoinstall'…\n")
+            self._set_busy(True, "Rebuilding DKMS modules…")
+            cmd = ["pkexec","dkms","autoinstall"]
+            def _done(rc, out):
+                self._set_busy(False, "DKMS build complete." if rc == 0 else "DKMS build failed.")
+                self._show_reboot_dialog()
+                self._end_log_session()
+            self._stream_subprocess(cmd, _done)
+
+    def _show_reboot_dialog(self):
+        dlg = Gtk.MessageDialog(
+            self.win, 0,
+            Gtk.MessageType.QUESTION,
+            Gtk.ButtonsType.NONE,
+            "Kernel installation completed."
+        )
+        dlg.format_secondary_text(
+            "A system reboot is required for the new kernel to take effect.\nDo you want to reboot now?"
+        )
+        dlg.add_button("Reboot Later", Gtk.ResponseType.CANCEL)
+        dlg.add_button("Reboot Now", Gtk.ResponseType.OK)
+        resp = dlg.run()
+        dlg.destroy()
+        if resp == Gtk.ResponseType.OK:
+            try:
+                subprocess.Popen(["pkexec","systemctl","reboot"])
+            except Exception as e:
+                self._error_dialog("Reboot failed", str(e))
+
+    def _remove_selected(self, *_):
+        pkgs = []
+        blocked = []
+        it = self.store.get_iter_first()
+        while it:
+            if self.store.get_value(it, COL_SELECTED) and self.store.get_value(it, COL_INSTALLED):
+                if self.store.get_value(it, COL_ACTIVE):
+                    blocked.append(self.store.get_value(it, COL_PKGNAME))
+                else:
+                    pkgs.append(self.store.get_value(it, COL_PKGNAME))
+            it = self.store.iter_next(it)
+        if blocked:
+            self._error_dialog("Cannot remove active kernel", "One or more selected kernels are currently running.")
+            return
+        if not pkgs:
+            self._error_dialog("Nothing to remove", "Select installed, non-active XanMod kernels to remove.")
+            return
+
+        self._action_show_details()
+        self._clear_log()
+        self._start_log_session("remove")
+        self._set_busy(True, "Removing selected kernels…")
+        cmd = ["pkexec","apt","remove","--purge","-y"] + pkgs
+        self._stream_subprocess(cmd, self._on_remove_done)
+
+    def _on_remove_done(self, rc: int, combined_output: str):
+        ok = (rc == 0)
+        self._set_busy(False, "Removal complete." if ok else "Removal failed.")
+        if not ok:
+            if self._is_auth_cancel(rc, combined_output):
+                self._error_dialog("Cancelled", "Authorization was denied or cancelled.")
+            else:
+                self._error_dialog("Removal failed", combined_output or "Unknown error")
+        self._reload_kernels_async()
+        self._end_log_session()
+
+    def _auto_remove_old_kernels(self, *_):
+        # Keep active + newest two version groups (by package version string)
+        installed = [k for k in self.kernels if k["installed"]]
+        if not installed:
+            self._error_dialog("Nothing to clean", "No installed XanMod kernels detected.")
+            return
+
+        versions = {}
+        for k in installed:
+            versions.setdefault(k["version"], []).append(k)
+
+        ver_list = list(versions.keys())
+        ver_list.sort(key=cmp_to_key(self._version_cmp))
+        active_ver = next((k["version"] for k in installed if k["active"]), None)
+
+        keep = set()
+        if active_ver:
+            keep.add(active_ver)
+        keep.update(ver_list[-2:])
+
+        to_remove = []
+        for v, entries in versions.items():
+            if v not in keep:
+                to_remove.extend([e["name"] for e in entries])
+
+        if not to_remove:
+            self._error_dialog("Nothing to remove", "Already keeping Active + two newest versions.")
+            return
+
+        self._action_show_details()
+        self._clear_log()
+        self._start_log_session("autoremove")
+        self._set_busy(True, "Auto-removing older XanMod kernels…")
+        cmd = ["pkexec","apt","remove","--purge","-y"] + sorted(set(to_remove))
+        self._stream_subprocess(cmd, self._on_autoremove_done)
+
+    def _on_autoremove_done(self, rc: int, combined_output: str):
+        ok = (rc == 0)
+        self._set_busy(False, "Cleanup complete." if ok else "Cleanup failed.")
+        if not ok:
+            if self._is_auth_cancel(rc, combined_output):
+                self._error_dialog("Cancelled", "Authorization was denied or cancelled.")
+            else:
+                self._error_dialog("Auto-remove failed", combined_output or "Unknown error")
+        self._reload_kernels_async()
+        self._end_log_session()
+
+    # --------------------------- Periodic check ------------------- #
+    def _periodic_check(self, *_):
+        self._reload_kernels_async()
+        if self.notify_ready and any(not k["installed"] for k in self.kernels):
+            try:
+                latest = next((k for k in self.kernels if not k["installed"]), None)
+                if latest:
+                    n = Notify.Notification.new("XanMod kernel available",
+                                                f"{latest['name']} ({latest['version']})",
+                                                ICON_UPDATE)
+                    n.show()
+            except Exception:
+                pass
+        hours = self._load_config().get("auto_check_hours", 6)
+        GLib.timeout_add_seconds(int(max(1, hours)) * 3600, self._periodic_check)
+        return False
+
+    # --------------------------- Helpers -------------------------- #
+    def _error_dialog(self, title, message):
+        dlg = Gtk.MessageDialog(self.win, 0, Gtk.MessageType.ERROR, Gtk.ButtonsType.OK, title)
+        dlg.format_secondary_text(message)
+        dlg.run(); dlg.destroy()
+
+    def _on_window_close(self):
+        self._end_log_session()
+        self.win = None
+
+
+# --------------------------- Entry -------------------------------- #
+def main():
+    mgr = KernelManager()
+    Gtk.main()
+
+if __name__ == "__main__":
+    main()
+

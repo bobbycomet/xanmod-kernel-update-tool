@@ -1,0 +1,8 @@
+Package: xanmod-kernel-manager
+Version: 1.0
+Section: utils
+Priority: optional
+Architecture: all
+Depends: python3, python3-gi, gir1.2-gtk-3.0, gir1.2-appindicator3-0.1, python3-apt, dkms
+Maintainer: Bobby Comet griffin.OS.help@gmail.com
+Description: A graphical manager for XanMod kernels with tray icon, updates, and DKMS rebuilds.
