@@ -36,7 +36,7 @@ Add the GPG Key: This key verifies that the packages you download are from a tru
         sudo apt update
         sudo apt install xanmod-kernel-manager
         ```
-        ```
+        
 
 Once installed, you'll find the XanMod Kernel Manager in your application menu. Simply click to open it and use the graphical interface to manage your kernels. The application will handle the technical details for you!
 
