@@ -26,7 +26,7 @@ echo "deb [bobbycomet=/etc/apt/keyrings/xanmod-manager-repo.gpg] https://bobbyco
 Update and Install: Now, update your package list and install the application.
 
 sudo apt update
-sudo apt install xanmodkernalmanager
+sudo apt install xanmod-kernel-manager
 
 
 How to Use
