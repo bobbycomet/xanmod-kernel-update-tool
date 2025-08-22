@@ -1,4 +1,4 @@
-XanMod Kernel Manager
+_XanMod Kernel Manager_
 
 The XanMod Kernel Manager is a simple graphical tool to help you manage your XanMod kernel installations. This application makes it easy to install, update, and remove different XanMod kernel versions without needing to use complex terminal commands.
 
@@ -26,11 +26,14 @@ echo "deb [bobbycomet=/etc/apt/keyrings/xanmod-manager-repo.gpg] https://bobbyco
 Update and Install: Now, update your package list and install the application.
 
 sudo apt update
+
 sudo apt install xanmod-kernel-manager
 
 
 How to Use
+
 Once installed, you'll find the XanMod Kernel Manager in your application menu. Simply click to open it and use the graphical interface to manage your kernels. The application will handle the technical details for you!
 
 License
+
 This project is released under the MIT License, which means it's completely open-source. Feel free to use, modify, and share it.
