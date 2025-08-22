@@ -37,6 +37,30 @@ How to Use
 
 Once installed, you'll find the XanMod Kernel Manager in your application menu. Simply click to open it and use the graphical interface to manage your kernels. The application will handle the technical details for you!
 
+Features
+
+Kernel Discovery: The application automatically detects and displays a list of all available and installed XanMod kernels by scanning the system's APT cache.
+
+Active Kernel Identification: It identifies and tags the currently running kernel as "Active", preventing users from accidentally removing it.
+
+Intuitive UI: The interface is divided into two panes: "Available XanMod Kernels" and "Installed (XanMod)", allowing for easy comparison and management. A search bar is included to filter the list of kernels.
+
+Installation & Removal: You can select kernels from either pane to install or remove them. The tool handles the necessary apt commands in the background using pkexec for elevated privileges.
+
+DKMS Integration: After a successful kernel installation, the manager automatically runs the necessary DKMS (Dynamic Kernel Module Support) commands to rebuild and install modules for the new kernel, ensuring hardware compatibility.
+
+Automated Cleanup: The "Auto-Remove Old Kernels" feature helps maintain a clean system by automatically purging older, unused kernels. By default, it keeps the active kernel plus the two most recent versions.
+
+Logging: All actions, including APT and DKMS output, are streamed to a log panel within the UI and saved to a log file (~/.config/xanmod-kernel-manager/logs/) for detailed review and troubleshooting.
+
+System Notifications: When new XanMod kernels are available for update, the application can show a desktop notification to alert you. This check can be performed periodically.
+
+Repo Management: If the official XanMod APT repository is not configured on the system, the application will offer to set it up automatically for you. This involves downloading the GPG key and creating the APT sources list file.
+
+Persistent Settings: It remembers your preferred window size and position and saves the "auto-remove after install" setting for future use.
+
+
+
 License
 
 This project is released under the MIT License, which means it's completely open-source. Feel free to use, modify, and share it.
