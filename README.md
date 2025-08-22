@@ -20,19 +20,19 @@ Add the GPG Key: This key verifies that the packages you download are from a tru
 
  **For the GPG Key command:**
     
-        ```bash
+        ```
         wget -qO - [https://raw.githubusercontent.com/bobbycomet/xanmod-kernel-update-tool/refs/heads/main/xanmodkernalmanager-repo/dists/stable/your-public-key.asc](https://raw.githubusercontent.com/bobbycomet/xanmod-kernel-update-tool/refs/heads/main/xanmodkernalmanager-repo/dists/stable/your-public-key.asc) | sudo gpg --dearmor -o /etc/apt/keyrings/xanmod-manager-repo.gpg
         ```
 
  **For the Add Repository command:**
   
-        ```bash
+        ```
         echo "deb [signed-by=/etc/apt/keyrings/xanmod-manager-repo.gpg] [https://bobbycomet.github.io/xanmod-kernel-update-tool](https://bobbycomet.github.io/xanmod-kernel-update-tool) stable main" | sudo tee /etc/apt/sources.list.d/xanmod-manager.list > /dev/null
         ```
 
  **For the Update and Install commands:**
    
-        ```bash
+        ```
         sudo apt update
         sudo apt install xanmod-kernel-manager
         ```
