@@ -1,18 +1,18 @@
-_XanMod Kernel Manager_
+**XanMod Kernel Manager**
 
 The XanMod Kernel Manager is a simple graphical tool to help you manage your XanMod kernel installations. This application makes it easy to install, update, and remove different XanMod kernel versions without needing to use complex terminal commands.
 
-Note: This is an unofficial tool created by a community member. It is not affiliated with the official XanMod project. It is designed to work on Linux Mint and other Debian-based systems that use GTK for their graphical applications.
+**Note: This is an unofficial tool created by a community member. It is not affiliated with the official XanMod project. It is designed to work on Linux Mint and other Debian-based systems that use GTK for their graphical applications.**
 
-Installation
+**Installation**
 
 There are two easy ways to install the XanMod Kernel Manager.
 
-Method 1: Direct .deb File
+**Method 1: Direct .deb File**
 
 If you just want to install the application, you can download the latest .deb file, named xanmodkernalmanager.deb, from the releases page and double-click it. Your system's package installer will handle the rest.
 
-Method 2: APT Repository (Recommended)
+**Method 2: APT Repository (Recommended)**
 
 To receive automatic updates, it's best to add our official APT repository. This lets you install the application using a single command and keep it up to date whenever you run sudo apt update.
 
@@ -26,18 +26,18 @@ Add the Repository: This command adds the XanMod Kernel Manager repository to yo
 echo "deb [bobbycomet=/etc/apt/keyrings/xanmod-manager-repo.gpg] https://bobbycomet.github.io/xanmod-kernel-update-tool stable main" | sudo tee /etc/apt/sources.list.d/xanmod-manager.list > /dev/null
 
 
-Update and Install: Now, update your package list and install the application.
+**Update and Install: Now, update your package list and install the application.**
 
 sudo apt update
 
 sudo apt install xanmod-kernel-manager
 
 
-How to Use
+**How to Use**
 
 Once installed, you'll find the XanMod Kernel Manager in your application menu. Simply click to open it and use the graphical interface to manage your kernels. The application will handle the technical details for you!
 
-Features
+**Features**
 
 Kernel Discovery: The application automatically detects and displays a list of all available and installed XanMod kernels by scanning the system's APT cache.
 
@@ -61,6 +61,6 @@ Persistent Settings: It remembers your preferred window size and position and sa
 
 
 
-License
+**License**
 
 This project is released under the MIT License, which means it's completely open-source. Feel free to use, modify, and share it.
