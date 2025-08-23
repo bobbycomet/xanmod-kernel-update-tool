@@ -20,22 +20,22 @@ Add the GPG Key: This key verifies that the packages you download are from a tru
 
 #  **For the GPG Key command:**
     
-        ```
-        wget -qO - [https://raw.githubusercontent.com/bobbycomet/xanmod-kernel-update-tool/refs/heads/main/xanmodkernalmanager-repo/dists/stable/your-public-key.asc](https://raw.githubusercontent.com/bobbycomet/xanmod-kernel-update-tool/refs/heads/main/xanmodkernalmanager-repo/dists/stable/your-public-key.asc) | sudo gpg --dearmor -o /etc/apt/keyrings/xanmod-manager-repo.gpg
-        ```
+``` 
+wget -qO - [https://raw.githubusercontent.com/bobbycomet/xanmod-kernel-update-tool/refs/heads/main/xanmodkernalmanager-repo/dists/stable/your-public-key.asc](https://raw.githubusercontent.com/bobbycomet/xanmod-kernel-update-tool/refs/heads/main/xanmodkernalmanager-repo/dists/stable/your-public-key.asc) | sudo gpg --dearmor -o /etc/apt/keyrings/xanmod-manager-repo.gpg
+```
 
 # **For the Add Repository command:**
   
-        ```
-        echo "deb [signed-by=/etc/apt/keyrings/xanmod-manager-repo.gpg] [https://bobbycomet.github.io/xanmod-kernel-update-tool](https://bobbycomet.github.io/xanmod-kernel-update-tool) stable main" | sudo tee /etc/apt/sources.list.d/xanmod-manager.list > /dev/null
-        ```
+```
+echo "deb [signed-by=/etc/apt/keyrings/xanmod-manager-repo.gpg] [https://bobbycomet.github.io/xanmod-kernel-update-tool](https://bobbycomet.github.io/xanmod-kernel-update-tool) stable main" | sudo tee /etc/apt/sources.list.d/xanmod-manager.list > /dev/null
+```
 
 # **For the Update and Install commands:**
    
-        ```
-        sudo apt update
-        sudo apt install xanmod-kernel-manager
-        ```
+```
+sudo apt update
+sudo apt install xanmod-kernel-manager
+```
         
 
 Once installed, you'll find the XanMod Kernel Manager in your application menu. Simply click to open it and use the graphical interface to manage your kernels. The application will handle the technical details for you!
