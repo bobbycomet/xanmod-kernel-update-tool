@@ -1,7 +1,7 @@
 # **XanMod Kernel Manager**
 
 ![Update tool example ](xanmodkm.png)
-
+![Update tool example ]{xenmodkm2.png)
 
 The XanMod Kernel Manager is a simple graphical tool to help you manage your XanMod kernel installations. This application makes it easy to install, update, and remove different XanMod kernel versions without needing to use complex terminal commands. It does the apt in the background, so no need to use the terminal. It also auto-installs your current drivers, such as NVIDIA xpad, network, and so on, even if they are not standard drivers. If there is an issue, it will alert you. The process may take a while on a system that does not have the kernel pre-installed. As long as you followed DKMS properly, they should be built properly, but if not, you will need to rebuild them. On Griffin OS, the drivers will be pre-installed with DKMS, so there should be no issues there.
 
