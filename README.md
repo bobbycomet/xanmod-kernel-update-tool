@@ -65,7 +65,7 @@ Repo Management: If the official XanMod APT repository is not configured on the 
 
 Persistent Settings: It remembers your preferred window size and position and saves the "auto-remove after install" setting for future use.
 
-
+Use this to complement the tool. Made specifically to work together. https://github.com/bobbycomet/xanmod-autotuner
 
 # **License**
 
