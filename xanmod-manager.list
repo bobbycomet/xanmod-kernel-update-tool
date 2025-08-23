@@ -1,0 +1,1 @@
+deb [arch=amd64 signed-by=/etc/apt/keyrings/xanmod-manager-repo.gpg] https://bobbycomet.github.io/xanmod-kernel-update-tool stable main
